@@ -37,7 +37,11 @@ enum SnakeColor {
     Magenta,
     Cyan,
     White,
+    /// Rainbow gradient along the snake's body, completing one full cycle
+    /// once the snake fills the entire board.
     Rainbow,
+    /// Animated rainbow that cycles through hues over time as well as body position.
+    Party,
 }
 
 impl SnakeColor {
@@ -51,6 +55,7 @@ impl SnakeColor {
             SnakeColor::Cyan => SnakeStyle::Solid(ColorStruct::new(50, 170, 170)),
             SnakeColor::White => SnakeStyle::Solid(ColorStruct::new(210, 210, 210)),
             SnakeColor::Rainbow => SnakeStyle::Rainbow,
+            SnakeColor::Party => SnakeStyle::Party,
         }
     }
 }
@@ -58,6 +63,7 @@ impl SnakeColor {
 enum SnakeStyle {
     Solid(ColorStruct),
     Rainbow,
+    Party,
 }
 
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
@@ -121,6 +127,12 @@ fn snake_color(v: u16, style: &SnakeStyle, frame: u64) -> Color {
                 .to_crossterm()
         }
         SnakeStyle::Rainbow => {
+            let total_cells = (FIELD_LINES * FIELD_COLS) as f32;
+            let hue = (v as f32 / total_cells) * 360.0;
+            let (r, g, b) = hsv_to_rgb(hue, 0.85, 0.95);
+            ColorStruct::new(r, g, b).to_crossterm()
+        }
+        SnakeStyle::Party => {
             let hue = (v as f32 * 18.0 + frame as f32 * 6.0) % 360.0;
             let (r, g, b) = hsv_to_rgb(hue, 0.85, 0.95);
             ColorStruct::new(r, g, b).to_crossterm()
