@@ -3,9 +3,10 @@ use crossterm::{
     style::{Color, Stylize},
 };
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::{self};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod game;
 mod tui;
@@ -117,28 +118,59 @@ fn main() -> io::Result<()> {
         (FIELD_LINES + 1) as u16,
     );
 
-    loop {
-        if poll(Duration::from_millis(100)).unwrap() {
+    let tick_rate = Duration::from_millis(100);
+    let mut last_tick = Instant::now();
+    let mut pending_moves: VecDeque<Direction> = VecDeque::new();
+
+    'main: loop {
+        loop {
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if timeout == Duration::ZERO {
+                break;
+            }
+
+            if !poll(timeout).unwrap() {
+                break;
+            }
+
             if let Ok(event) = read() {
                 if let Event::Key(key) = event {
-                    match key.code {
-                        KeyCode::Esc => break,
+                    let dir = match key.code {
+                        KeyCode::Esc => break 'main,
                         KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => {
-                            game.move_to(Direction::Up);
+                            Some(Direction::Up)
                         }
                         KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('s') => {
-                            game.move_to(Direction::Down);
+                            Some(Direction::Down)
                         }
                         KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('a') => {
-                            game.move_to(Direction::Left);
+                            Some(Direction::Left)
                         }
                         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') => {
-                            game.move_to(Direction::Right);
+                            Some(Direction::Right)
                         }
-                        _ => {}
+                        _ => None,
+                    };
+
+                    if let Some(dir) = dir {
+                        // Cap the buffer so a queued turn can't outlive the snake's
+                        // ability to actually reach it before crashing into itself.
+                        if pending_moves.len() < 2 {
+                            pending_moves.push_back(dir);
+                        }
                     }
                 }
             }
+        }
+
+        if last_tick.elapsed() < tick_rate {
+            continue;
+        }
+
+        last_tick = Instant::now();
+
+        if let Some(dir) = pending_moves.pop_front() {
+            game.move_to(dir);
         }
 
         game.step();
