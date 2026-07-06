@@ -1,3 +1,4 @@
+use clap::{Parser, ValueEnum};
 use crossterm::{
     event::{poll, read, Event, KeyCode},
     style::{Color, Stylize},
@@ -14,6 +15,43 @@ mod util;
 
 use crate::game::{Direction, Game, GameState, Tile, FIELD_COLS, FIELD_LINES};
 use crate::tui::{Renderer, Window};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "A cross platform snake game running in the terminal")]
+struct Args {
+    /// Milliseconds between game ticks (lower means faster)
+    #[arg(short = 'r', long, default_value_t = 100)]
+    refresh_rate: u64,
+
+    /// Snake color
+    #[arg(short, long, value_enum, default_value_t = SnakeColor::Green)]
+    color: SnakeColor,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum SnakeColor {
+    Green,
+    Red,
+    Blue,
+    Yellow,
+    Magenta,
+    Cyan,
+    White,
+}
+
+impl SnakeColor {
+    fn to_rgb(self) -> (u8, u8, u8) {
+        match self {
+            SnakeColor::Green => (66, 168, 50),
+            SnakeColor::Red => (200, 60, 60),
+            SnakeColor::Blue => (60, 110, 200),
+            SnakeColor::Yellow => (200, 180, 40),
+            SnakeColor::Magenta => (170, 60, 170),
+            SnakeColor::Cyan => (50, 170, 170),
+            SnakeColor::White => (210, 210, 210),
+        }
+    }
+}
 
 struct ColorStruct {
     r: u8,
@@ -47,17 +85,22 @@ impl ColorStruct {
     }
 }
 
-fn snake_color(v: u16) -> Color {
+fn snake_color(v: u16, base: &ColorStruct) -> Color {
     let t: f32 = 1.0 - (v as f32 / (FIELD_LINES * FIELD_COLS / 4) as f32);
 
-    ColorStruct::new(66, 168, 50)
-        .interpolate(ColorStruct::new(242, 230, 61), t)
+    base.interpolate(ColorStruct::new(242, 230, 61), t)
         .to_crossterm()
 }
 
-fn draw_tile(window: &Window, x: u16, y: u16, t: &Tile) -> Result<(), io::Error> {
+fn draw_tile(
+    window: &Window,
+    x: u16,
+    y: u16,
+    t: &Tile,
+    snake_base: &ColorStruct,
+) -> Result<(), io::Error> {
     let tile_ch = match t {
-        Tile::Snake(v) => ' '.on(snake_color(*v)),
+        Tile::Snake(v) => ' '.on(snake_color(*v, snake_base)),
         Tile::Apple => ' '.on_red(),
         _ => ' '.blue(),
     };
@@ -68,14 +111,14 @@ fn draw_tile(window: &Window, x: u16, y: u16, t: &Tile) -> Result<(), io::Error>
     Ok(())
 }
 
-fn draw_game(window: &mut Window, game: &Game) -> Result<(), io::Error> {
+fn draw_game(window: &mut Window, game: &Game, snake_base: &ColorStruct) -> Result<(), io::Error> {
     let title = format!("Apples: {}", game.points());
     window.set_title(&title);
     window.draw_borders()?;
 
     for y in 0..game.field().len() {
         for x in 0..game.field()[0].len() {
-            draw_tile(window, x as u16, y as u16, &game.field()[y][x])?;
+            draw_tile(window, x as u16, y as u16, &game.field()[y][x], snake_base)?;
         }
     }
 
@@ -105,6 +148,10 @@ fn draw_end_menu(window: &mut Window, points: u16) -> Result<(), io::Error> {
 }
 
 fn main() -> io::Result<()> {
+    let args = Args::parse();
+    let (r, g, b) = args.color.to_rgb();
+    let snake_base = ColorStruct::new(r, g, b);
+
     let mut renderer = Renderer::new();
 
     renderer.init()?;
@@ -118,7 +165,7 @@ fn main() -> io::Result<()> {
         (FIELD_LINES + 1) as u16,
     );
 
-    let tick_rate = Duration::from_millis(100);
+    let tick_rate = Duration::from_millis(args.refresh_rate);
     let mut last_tick = Instant::now();
     let mut pending_moves: VecDeque<Direction> = VecDeque::new();
 
@@ -177,7 +224,7 @@ fn main() -> io::Result<()> {
 
         match game.state() {
             GameState::Starting => draw_main_menu(&mut win)?,
-            GameState::Started => draw_game(&mut win, &game)?,
+            GameState::Started => draw_game(&mut win, &game, &snake_base)?,
             GameState::Ended => {
                 renderer.borrow_mut().clear()?;
                 draw_end_menu(&mut win, game.points())?;
