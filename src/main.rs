@@ -58,6 +58,13 @@ impl SnakeColor {
             SnakeColor::Party => SnakeStyle::Party,
         }
     }
+
+    fn apple_color(self) -> Color {
+        match self {
+            SnakeColor::Red | SnakeColor::Rainbow | SnakeColor::Party => Color::White,
+            _ => Color::Red,
+        }
+    }
 }
 
 enum SnakeStyle {
@@ -146,11 +153,12 @@ fn draw_tile(
     y: u16,
     t: &Tile,
     snake_style: &SnakeStyle,
+    apple_color: Color,
     frame: u64,
 ) -> Result<(), io::Error> {
     let tile_ch = match t {
         Tile::Snake(v) => ' '.on(snake_color(*v, snake_style, frame)),
-        Tile::Apple => ' '.on_red(),
+        Tile::Apple => ' '.on(apple_color),
         _ => ' '.blue(),
     };
 
@@ -164,6 +172,7 @@ fn draw_game(
     window: &mut Window,
     game: &Game,
     snake_style: &SnakeStyle,
+    apple_color: Color,
     frame: u64,
 ) -> Result<(), io::Error> {
     let title = format!("Apples: {}", game.points());
@@ -178,6 +187,7 @@ fn draw_game(
                 y as u16,
                 &game.field()[y][x],
                 snake_style,
+                apple_color,
                 frame,
             )?;
         }
@@ -211,6 +221,7 @@ fn draw_end_menu(window: &mut Window, points: u16) -> Result<(), io::Error> {
 fn main() -> io::Result<()> {
     let args = Args::parse();
     let snake_style = args.color.to_style();
+    let apple_color = args.color.apple_color();
 
     let mut renderer = Renderer::new();
 
@@ -286,7 +297,7 @@ fn main() -> io::Result<()> {
 
         match game.state() {
             GameState::Starting => draw_main_menu(&mut win)?,
-            GameState::Started => draw_game(&mut win, &game, &snake_style, frame)?,
+            GameState::Started => draw_game(&mut win, &game, &snake_style, apple_color, frame)?,
             GameState::Ended => {
                 renderer.borrow_mut().clear()?;
                 draw_end_menu(&mut win, game.points())?;
