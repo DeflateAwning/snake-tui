@@ -1,5 +1,5 @@
 use chrono::Local;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use crossterm::{
     event::{poll, read, Event, KeyCode},
     style::{Color, Stylize},
@@ -20,6 +20,7 @@ use crate::highscore::{add_score, HighScoreEntry};
 use crate::tui::{Renderer, Window};
 
 const MAX_NAME_LEN: usize = 8;
+const GRADIENT_LOOPS: f32 = 3.0;
 
 enum PostGamePhase {
     Cooldown,
@@ -34,52 +35,83 @@ struct Args {
     #[arg(short = 'r', long, default_value_t = 10.0)]
     frequency: f64,
 
-    /// Snake color
-    #[arg(short, long, value_enum, default_value_t = SnakeColor::Green)]
-    color: SnakeColor,
+    /// Snake color: one of green, red, blue, yellow, orange, magenta, cyan,
+    /// white, rainbow (static gradient across the whole body), party
+    /// (animated rainbow), or a custom gradient made of hyphen-joined color names,
+    /// e.g. "red-magenta-blue".
+    #[arg(short, long, value_parser = parse_color_arg, default_value = "green")]
+    color: ColorArg,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum SnakeColor {
-    Green,
-    Red,
-    Blue,
-    Yellow,
-    Magenta,
-    Cyan,
-    White,
-    /// Rainbow gradient along the snake's body, completing one full cycle
-    /// once the snake fills the entire board.
-    Rainbow,
-    /// Animated rainbow that cycles through hues over time as well as body position.
-    Party,
+#[derive(Clone, Debug)]
+struct ColorArg {
+    raw: String,
+    style: SnakeStyle,
 }
 
-impl SnakeColor {
-    fn to_style(self) -> SnakeStyle {
-        match self {
-            SnakeColor::Green => SnakeStyle::Solid(ColorStruct::new(66, 168, 50)),
-            SnakeColor::Red => SnakeStyle::Solid(ColorStruct::new(200, 60, 60)),
-            SnakeColor::Blue => SnakeStyle::Solid(ColorStruct::new(60, 110, 200)),
-            SnakeColor::Yellow => SnakeStyle::Solid(ColorStruct::new(200, 180, 40)),
-            SnakeColor::Magenta => SnakeStyle::Solid(ColorStruct::new(170, 60, 170)),
-            SnakeColor::Cyan => SnakeStyle::Solid(ColorStruct::new(50, 170, 170)),
-            SnakeColor::White => SnakeStyle::Solid(ColorStruct::new(210, 210, 210)),
-            SnakeColor::Rainbow => SnakeStyle::Rainbow,
-            SnakeColor::Party => SnakeStyle::Party,
-        }
-    }
-
-    fn apple_color(self) -> Color {
-        match self {
-            SnakeColor::Red | SnakeColor::Rainbow | SnakeColor::Party => Color::White,
-            _ => Color::Red,
-        }
+fn named_color_rgb(name: &str) -> Option<(u8, u8, u8)> {
+    match name.trim().to_lowercase().as_str() {
+        "green" => Some((66, 168, 50)),
+        "red" => Some((200, 60, 60)),
+        "blue" => Some((60, 110, 200)),
+        "yellow" => Some((200, 180, 40)),
+        "orange" => Some((220, 120, 30)),
+        "magenta" => Some((170, 60, 170)),
+        "cyan" => Some((50, 170, 170)),
+        "white" => Some((210, 210, 210)),
+        _ => None,
     }
 }
 
+fn parse_style(s: &str) -> Result<SnakeStyle, String> {
+    let s = s.trim();
+
+    if s.is_empty() {
+        return Err("color must not be empty".to_string());
+    }
+
+    match s.to_lowercase().as_str() {
+        "rainbow" => return Ok(SnakeStyle::Rainbow),
+        "party" => return Ok(SnakeStyle::Party),
+        _ => {}
+    }
+
+    let stops = s
+        .split('-')
+        .map(|part| {
+            named_color_rgb(part)
+                .map(|(r, g, b)| ColorStruct::new(r, g, b))
+                .ok_or_else(|| format!("unknown color '{part}'"))
+        })
+        .collect::<Result<Vec<ColorStruct>, String>>()?;
+
+    match stops.len() {
+        1 => Ok(SnakeStyle::Solid(stops[0])),
+        _ => Ok(SnakeStyle::Gradient(stops)),
+    }
+}
+
+fn parse_color_arg(s: &str) -> Result<ColorArg, String> {
+    let style = parse_style(s)?;
+
+    Ok(ColorArg {
+        raw: s.trim().to_lowercase(),
+        style,
+    })
+}
+
+fn apple_color_for(raw: &str) -> Color {
+    if raw.contains('-') || raw == "red" || raw == "rainbow" || raw == "party" {
+        Color::White
+    } else {
+        Color::Red
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 enum SnakeStyle {
     Solid(ColorStruct),
+    Gradient(Vec<ColorStruct>),
     Rainbow,
     Party,
 }
@@ -104,6 +136,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
     )
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
 struct ColorStruct {
     r: u8,
     g: u8,
@@ -143,6 +176,17 @@ fn snake_color(v: u16, style: &SnakeStyle, frame: u64) -> Color {
 
             base.interpolate(ColorStruct::new(242, 230, 61), t)
                 .to_crossterm()
+        }
+        SnakeStyle::Gradient(stops) => {
+            let total_cells = (FIELD_LINES * FIELD_COLS) as f32;
+            let segments = stops.len() - 1;
+            let total_virtual_segments = segments as f32 * GRADIENT_LOOPS;
+            let pos = (v as f32 / total_cells).clamp(0.0, 1.0) * total_virtual_segments;
+            let idx_global = (pos.floor() as usize).min(total_virtual_segments as usize - 1);
+            let local_t = pos - idx_global as f32;
+            let idx = idx_global % segments;
+
+            stops[idx + 1].interpolate(stops[idx], local_t).to_crossterm()
         }
         SnakeStyle::Rainbow => {
             let total_cells = (FIELD_LINES * FIELD_COLS) as f32;
@@ -281,8 +325,8 @@ fn draw_scoreboard(window: &mut Window, scores: &[HighScoreEntry]) -> Result<(),
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
-    let snake_style = args.color.to_style();
-    let apple_color = args.color.apple_color();
+    let snake_style = args.color.style.clone();
+    let apple_color = apple_color_for(&args.color.raw);
 
     let mut renderer = Renderer::new();
 
@@ -331,7 +375,7 @@ fn main() -> io::Result<()> {
                                 let entry = HighScoreEntry {
                                     name: final_name,
                                     score: game.points(),
-                                    color: format!("{:?}", args.color),
+                                    color: args.color.raw.clone(),
                                     speed: args.frequency,
                                     date: Local::now().format("%Y-%m-%d").to_string(),
                                 };
@@ -469,4 +513,157 @@ fn main() -> io::Result<()> {
     renderer.borrow_mut().dispose()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_single_named_color_as_solid() {
+        let style = parse_style("green").unwrap();
+        assert_eq!(style, SnakeStyle::Solid(ColorStruct::new(66, 168, 50)));
+    }
+
+    #[test]
+    fn parses_orange_and_yellow() {
+        assert_eq!(
+            parse_style("orange").unwrap(),
+            SnakeStyle::Solid(ColorStruct::new(220, 120, 30))
+        );
+        assert_eq!(
+            parse_style("yellow").unwrap(),
+            SnakeStyle::Solid(ColorStruct::new(200, 180, 40))
+        );
+    }
+
+    #[test]
+    fn parsing_is_case_insensitive_and_trims_whitespace() {
+        let style = parse_style("  ReD  ").unwrap();
+        assert_eq!(style, SnakeStyle::Solid(ColorStruct::new(200, 60, 60)));
+    }
+
+    #[test]
+    fn parses_rainbow_keyword() {
+        assert_eq!(parse_style("rainbow").unwrap(), SnakeStyle::Rainbow);
+        assert_eq!(parse_style("Rainbow").unwrap(), SnakeStyle::Rainbow);
+    }
+
+    #[test]
+    fn parses_party_keyword() {
+        assert_eq!(parse_style("party").unwrap(), SnakeStyle::Party);
+    }
+
+    #[test]
+    fn parses_two_stop_gradient() {
+        let style = parse_style("red-magenta").unwrap();
+        assert_eq!(
+            style,
+            SnakeStyle::Gradient(vec![
+                ColorStruct::new(200, 60, 60),
+                ColorStruct::new(170, 60, 170),
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_multi_stop_gradient_preserving_order() {
+        let style = parse_style("red-magenta-blue").unwrap();
+        assert_eq!(
+            style,
+            SnakeStyle::Gradient(vec![
+                ColorStruct::new(200, 60, 60),
+                ColorStruct::new(170, 60, 170),
+                ColorStruct::new(60, 110, 200),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_color_name() {
+        assert!(parse_style("mauve").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_color_within_gradient() {
+        let err = parse_style("red-mauve-blue").unwrap_err();
+        assert!(err.contains("mauve"));
+    }
+
+    #[test]
+    fn rejects_empty_color() {
+        assert!(parse_style("").is_err());
+        assert!(parse_style("   ").is_err());
+    }
+
+    #[test]
+    fn color_arg_stores_lowercased_raw_value() {
+        let arg = parse_color_arg("Red-Magenta").unwrap();
+        assert_eq!(arg.raw, "red-magenta");
+        assert_eq!(
+            arg.style,
+            SnakeStyle::Gradient(vec![
+                ColorStruct::new(200, 60, 60),
+                ColorStruct::new(170, 60, 170),
+            ])
+        );
+    }
+
+    #[test]
+    fn apple_is_white_for_gradients_red_rainbow_and_party() {
+        assert_eq!(apple_color_for("red-magenta"), Color::White);
+        assert_eq!(apple_color_for("red"), Color::White);
+        assert_eq!(apple_color_for("rainbow"), Color::White);
+        assert_eq!(apple_color_for("party"), Color::White);
+    }
+
+    #[test]
+    fn apple_is_red_for_other_solid_colors() {
+        assert_eq!(apple_color_for("green"), Color::Red);
+        assert_eq!(apple_color_for("blue"), Color::Red);
+    }
+
+    #[test]
+    fn gradient_final_stop_shows_when_snake_fills_the_board() {
+        let stops = vec![
+            ColorStruct::new(200, 60, 60),
+            ColorStruct::new(170, 60, 170),
+            ColorStruct::new(60, 110, 200),
+        ];
+        let style = SnakeStyle::Gradient(stops.clone());
+        let total_cells = (FIELD_LINES * FIELD_COLS) as u16;
+
+        let color = snake_color(total_cells, &style, 0);
+        assert_eq!(color, stops.last().unwrap().to_crossterm());
+    }
+
+    #[test]
+    fn gradient_starts_at_first_stop() {
+        let stops = vec![
+            ColorStruct::new(200, 60, 60),
+            ColorStruct::new(170, 60, 170),
+            ColorStruct::new(60, 110, 200),
+        ];
+        let style = SnakeStyle::Gradient(stops.clone());
+
+        let color = snake_color(0, &style, 0);
+        assert_eq!(color, stops[0].to_crossterm());
+    }
+
+    #[test]
+    fn gradient_loops_three_times_across_the_board() {
+        let stops = vec![
+            ColorStruct::new(200, 60, 60),
+            ColorStruct::new(170, 60, 170),
+            ColorStruct::new(60, 110, 200),
+        ];
+        let style = SnakeStyle::Gradient(stops.clone());
+        let total_cells = (FIELD_LINES * FIELD_COLS) as u16;
+
+        // Halfway through the board is 1.5 gradient loops in, landing back
+        // exactly on the middle stop instead of merely halfway to the end.
+        let halfway = total_cells / 2;
+        let color = snake_color(halfway, &style, 0);
+        assert_eq!(color, stops[1].to_crossterm());
+    }
 }
