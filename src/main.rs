@@ -1,3 +1,4 @@
+use chrono::Local;
 use clap::{Parser, ValueEnum};
 use crossterm::{
     event::{poll, read, Event, KeyCode},
@@ -10,11 +11,21 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 mod game;
+mod highscore;
 mod tui;
 mod util;
 
 use crate::game::{Direction, Game, GameState, Tile, FIELD_COLS, FIELD_LINES};
+use crate::highscore::{add_score, HighScoreEntry};
 use crate::tui::{Renderer, Window};
+
+const MAX_NAME_LEN: usize = 8;
+
+enum PostGamePhase {
+    Cooldown,
+    NameEntry(String),
+    Scoreboard(Vec<HighScoreEntry>),
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "A cross platform snake game running in the terminal")]
@@ -220,6 +231,54 @@ fn draw_end_menu(window: &mut Window, points: u16, duration: Duration) -> Result
     Ok(())
 }
 
+fn draw_name_entry(window: &mut Window, points: u16, name: &str) -> Result<(), io::Error> {
+    window.set_title("Game Over");
+    window.draw_borders()?;
+
+    let p = format!("You ate {} apples", points);
+    window.print_centered_str(2, &p)?;
+    window.print_centered_str(4, "Enter your name for the high score board:")?;
+    window.print_centered_str(6, &format!("{}_", name))?;
+    window.print_centered_str(8, "Press Enter to confirm")?;
+
+    Ok(())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        s.chars().take(max).collect()
+    } else {
+        s.to_string()
+    }
+}
+
+fn draw_scoreboard(window: &mut Window, scores: &[HighScoreEntry]) -> Result<(), io::Error> {
+    window.set_title("High Scores");
+    window.draw_borders()?;
+
+    if scores.is_empty() {
+        window.print_centered_str(2, "No scores yet")?;
+    } else {
+        for (i, entry) in scores.iter().enumerate() {
+            let row = format!(
+                "{:>2}. {:<8} {:>3}pts {:<7} {:>4.1}Hz {}",
+                i + 1,
+                truncate(&entry.name, MAX_NAME_LEN),
+                entry.score,
+                entry.color,
+                entry.speed,
+                entry.date
+            );
+            window.print_str(2, (i + 2) as u16, &row)?;
+        }
+    }
+
+    let footer_row = scores.len().max(1) as u16 + 3;
+    window.print_centered_str(footer_row, "Press an arrow key, WASD or HJKL to play again")?;
+
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     let args = Args::parse();
     let snake_style = args.color.to_style();
@@ -245,6 +304,7 @@ fn main() -> io::Result<()> {
     let mut frame: u64 = 0;
     let mut game_start: Option<Instant> = None;
     let mut ended_at: Option<Instant> = None;
+    let mut post_game: Option<PostGamePhase> = None;
 
     'main: loop {
         loop {
@@ -259,28 +319,83 @@ fn main() -> io::Result<()> {
 
             if let Ok(event) = read() {
                 if let Event::Key(key) = event {
-                    let dir = match key.code {
-                        KeyCode::Esc => break 'main,
-                        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => {
-                            Some(Direction::Up)
-                        }
-                        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('s') => {
-                            Some(Direction::Down)
-                        }
-                        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('a') => {
-                            Some(Direction::Left)
-                        }
-                        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') => {
-                            Some(Direction::Right)
-                        }
-                        _ => None,
-                    };
+                    match &mut post_game {
+                        Some(PostGamePhase::NameEntry(name)) => match key.code {
+                            KeyCode::Esc => break 'main,
+                            KeyCode::Enter => {
+                                let final_name = if name.trim().is_empty() {
+                                    "Anonymous".to_string()
+                                } else {
+                                    name.trim().to_string()
+                                };
+                                let entry = HighScoreEntry {
+                                    name: final_name,
+                                    score: game.points(),
+                                    color: format!("{:?}", args.color),
+                                    speed: args.frequency,
+                                    date: Local::now().format("%Y-%m-%d").to_string(),
+                                };
+                                let scores = add_score(entry);
+                                post_game = Some(PostGamePhase::Scoreboard(scores));
+                            }
+                            KeyCode::Backspace => {
+                                name.pop();
+                            }
+                            KeyCode::Char(c)
+                                if !c.is_control() && name.chars().count() < MAX_NAME_LEN =>
+                            {
+                                name.push(c);
+                            }
+                            _ => {}
+                        },
+                        Some(PostGamePhase::Scoreboard(_)) => {
+                            let dir = match key.code {
+                                KeyCode::Esc => break 'main,
+                                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => {
+                                    Some(Direction::Up)
+                                }
+                                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('s') => {
+                                    Some(Direction::Down)
+                                }
+                                KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('a') => {
+                                    Some(Direction::Left)
+                                }
+                                KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') => {
+                                    Some(Direction::Right)
+                                }
+                                _ => None,
+                            };
 
-                    if let Some(dir) = dir {
-                        // Cap the buffer so a queued turn can't outlive the snake's
-                        // ability to actually reach it before crashing into itself.
-                        if pending_moves.len() < 2 {
-                            pending_moves.push_back(dir);
+                            if let Some(dir) = dir {
+                                pending_moves.push_back(dir);
+                                post_game = None;
+                            }
+                        }
+                        Some(PostGamePhase::Cooldown) | None => {
+                            let dir = match key.code {
+                                KeyCode::Esc => break 'main,
+                                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => {
+                                    Some(Direction::Up)
+                                }
+                                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('s') => {
+                                    Some(Direction::Down)
+                                }
+                                KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('a') => {
+                                    Some(Direction::Left)
+                                }
+                                KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') => {
+                                    Some(Direction::Right)
+                                }
+                                _ => None,
+                            };
+
+                            if let Some(dir) = dir {
+                                // Cap the buffer so a queued turn can't outlive the snake's
+                                // ability to actually reach it before crashing into itself.
+                                if pending_moves.len() < 2 {
+                                    pending_moves.push_back(dir);
+                                }
+                            }
                         }
                     }
                 }
@@ -295,10 +410,9 @@ fn main() -> io::Result<()> {
         frame = frame.wrapping_add(1);
 
         let prev_state = game.state();
-        let locked = prev_state == GameState::Ended
-            && ended_at.is_some_and(|t| t.elapsed() < end_screen_lock);
+        let can_restart = prev_state != GameState::Ended || post_game.is_none();
 
-        if !locked {
+        if can_restart {
             if let Some(dir) = pending_moves.pop_front() {
                 game.move_to(dir);
             }
@@ -311,23 +425,41 @@ fn main() -> io::Result<()> {
         if prev_state != GameState::Started && state == GameState::Started {
             game_start = Some(Instant::now());
             ended_at = None;
+            post_game = None;
         }
 
         if prev_state == GameState::Started && state == GameState::Ended {
             ended_at = Some(Instant::now());
+            post_game = Some(PostGamePhase::Cooldown);
+        }
+
+        if let Some(PostGamePhase::Cooldown) = post_game {
+            if ended_at.is_some_and(|t| t.elapsed() >= end_screen_lock) {
+                post_game = Some(PostGamePhase::NameEntry(String::new()));
+            }
         }
 
         match state {
             GameState::Starting => draw_main_menu(&mut win)?,
             GameState::Started => draw_game(&mut win, &game, &snake_style, apple_color, frame)?,
             GameState::Ended => {
-                let duration = match (game_start, ended_at) {
-                    (Some(start), Some(end)) => end.duration_since(start),
-                    _ => Duration::ZERO,
-                };
-
                 renderer.borrow_mut().clear()?;
-                draw_end_menu(&mut win, game.points(), duration)?;
+
+                match &post_game {
+                    Some(PostGamePhase::NameEntry(name)) => {
+                        draw_name_entry(&mut win, game.points(), name)?;
+                    }
+                    Some(PostGamePhase::Scoreboard(scores)) => {
+                        draw_scoreboard(&mut win, scores)?;
+                    }
+                    Some(PostGamePhase::Cooldown) | None => {
+                        let duration = match (game_start, ended_at) {
+                            (Some(start), Some(end)) => end.duration_since(start),
+                            _ => Duration::ZERO,
+                        };
+                        draw_end_menu(&mut win, game.points(), duration)?;
+                    }
+                }
             }
         }
 
