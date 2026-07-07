@@ -207,13 +207,15 @@ fn draw_main_menu(window: &mut Window) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn draw_end_menu(window: &mut Window, points: u16) -> Result<(), io::Error> {
+fn draw_end_menu(window: &mut Window, points: u16, duration: Duration) -> Result<(), io::Error> {
     window.set_title("Game Over");
     window.draw_borders()?;
 
     let p = format!("You ate {} apples", points);
+    let d = format!("You survived {:.1}s", duration.as_secs_f32());
     window.print_centered_str(2, &p)?;
-    window.print_centered_str(4, "Use arrow keys ← → ↑ ↓, WASD or HJKL to restart")?;
+    window.print_centered_str(3, &d)?;
+    window.print_centered_str(5, "Use arrow keys ← → ↑ ↓, WASD or HJKL to restart")?;
 
     Ok(())
 }
@@ -237,9 +239,12 @@ fn main() -> io::Result<()> {
     );
 
     let tick_rate = Duration::from_secs_f64(1.0 / args.frequency);
+    let end_screen_lock = Duration::from_secs(4);
     let mut last_tick = Instant::now();
     let mut pending_moves: VecDeque<Direction> = VecDeque::new();
     let mut frame: u64 = 0;
+    let mut game_start: Option<Instant> = None;
+    let mut ended_at: Option<Instant> = None;
 
     'main: loop {
         loop {
@@ -289,18 +294,40 @@ fn main() -> io::Result<()> {
         last_tick = Instant::now();
         frame = frame.wrapping_add(1);
 
-        if let Some(dir) = pending_moves.pop_front() {
-            game.move_to(dir);
+        let prev_state = game.state();
+        let locked = prev_state == GameState::Ended
+            && ended_at.is_some_and(|t| t.elapsed() < end_screen_lock);
+
+        if !locked {
+            if let Some(dir) = pending_moves.pop_front() {
+                game.move_to(dir);
+            }
         }
 
         game.step();
 
-        match game.state() {
+        let state = game.state();
+
+        if prev_state != GameState::Started && state == GameState::Started {
+            game_start = Some(Instant::now());
+            ended_at = None;
+        }
+
+        if prev_state == GameState::Started && state == GameState::Ended {
+            ended_at = Some(Instant::now());
+        }
+
+        match state {
             GameState::Starting => draw_main_menu(&mut win)?,
             GameState::Started => draw_game(&mut win, &game, &snake_style, apple_color, frame)?,
             GameState::Ended => {
+                let duration = match (game_start, ended_at) {
+                    (Some(start), Some(end)) => end.duration_since(start),
+                    _ => Duration::ZERO,
+                };
+
                 renderer.borrow_mut().clear()?;
-                draw_end_menu(&mut win, game.points())?;
+                draw_end_menu(&mut win, game.points(), duration)?;
             }
         }
 
