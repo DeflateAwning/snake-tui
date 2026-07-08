@@ -16,7 +16,7 @@ mod tui;
 mod util;
 
 use crate::game::{Direction, Game, GameState, Tile, FIELD_COLS, FIELD_LINES};
-use crate::highscore::{add_score, HighScoreEntry};
+use crate::highscore::{add_score, load_scores, qualifies, HighScoreEntry};
 use crate::tui::{Renderer, Window};
 
 const MAX_NAME_LEN: usize = 8;
@@ -479,7 +479,11 @@ fn main() -> io::Result<()> {
 
         if let Some(PostGamePhase::Cooldown) = post_game {
             if ended_at.is_some_and(|t| t.elapsed() >= end_screen_lock) {
-                post_game = Some(PostGamePhase::NameEntry(String::new()));
+                post_game = Some(if qualifies(game.points()) {
+                    PostGamePhase::NameEntry(String::new())
+                } else {
+                    PostGamePhase::Scoreboard(load_scores())
+                });
             }
         }
 

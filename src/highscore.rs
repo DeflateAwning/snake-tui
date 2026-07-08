@@ -39,6 +39,13 @@ fn save_scores(scores: &[HighScoreEntry]) {
     }
 }
 
+/// Whether `score` would earn a spot on the board: true if there's room left,
+/// or the score beats the current lowest entry.
+pub fn qualifies(score: u16) -> bool {
+    let scores = load_scores();
+    scores.len() < MAX_ENTRIES || scores.iter().map(|s| s.score).min().is_some_and(|min| score > min)
+}
+
 pub fn add_score(entry: HighScoreEntry) -> Vec<HighScoreEntry> {
     let mut scores = load_scores();
     scores.push(entry);
