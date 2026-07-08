@@ -20,6 +20,7 @@ use crate::highscore::{add_score, load_scores, qualifies, HighScoreEntry};
 use crate::tui::{Renderer, Window};
 
 const MAX_NAME_LEN: usize = 8;
+const MAX_COLOR_LEN: usize = 7;
 const GRADIENT_LOOPS: f32 = 3.0;
 
 enum PostGamePhase {
@@ -296,6 +297,22 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// A multi-color gradient like "red-magenta-blue" is abbreviated to its
+/// colors' initials ("RMB") so it can't blow out the scoreboard's fixed
+/// column width; single color names (including "rainbow"/"party") pass
+/// through untouched.
+fn format_color(color: &str) -> String {
+    if color.contains('-') {
+        color
+            .split('-')
+            .filter_map(|part| part.chars().next())
+            .map(|c| c.to_ascii_uppercase())
+            .collect()
+    } else {
+        color.to_string()
+    }
+}
+
 fn draw_scoreboard(window: &mut Window, scores: &[HighScoreEntry]) -> Result<(), io::Error> {
     window.set_title("High Scores");
     window.draw_borders()?;
@@ -309,7 +326,7 @@ fn draw_scoreboard(window: &mut Window, scores: &[HighScoreEntry]) -> Result<(),
                 i + 1,
                 truncate(&entry.name, MAX_NAME_LEN),
                 entry.score,
-                entry.color,
+                truncate(&format_color(&entry.color), MAX_COLOR_LEN),
                 entry.speed,
                 entry.date
             );
