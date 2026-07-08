@@ -342,7 +342,7 @@ fn main() -> io::Result<()> {
     );
 
     let tick_rate = Duration::from_secs_f64(1.0 / args.frequency);
-    let end_screen_lock = Duration::from_secs(4);
+    let end_screen_lock = Duration::from_secs_f64(2.5);
     let mut last_tick = Instant::now();
     let mut pending_moves: VecDeque<Direction> = VecDeque::new();
     let mut frame: u64 = 0;
