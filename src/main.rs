@@ -352,11 +352,6 @@ fn main() -> io::Result<()> {
     let renderer = Rc::new(RefCell::new(renderer));
 
     let mut game = Game::new();
-    let mut win = Window::centered(
-        renderer.clone(),
-        (FIELD_COLS * 2 + 2) as u16,
-        (FIELD_LINES + 1) as u16,
-    );
 
     let tick_rate = Duration::from_secs_f64(1.0 / args.frequency);
     let end_screen_lock = Duration::from_secs_f64(2.5);
@@ -379,6 +374,16 @@ fn main() -> io::Result<()> {
             }
 
             if let Ok(event) = read() {
+                if let Event::Resize(_, _) = event {
+                    // The window is recentered against the live terminal size
+                    // every frame, but anything already drawn at the old
+                    // position/size would otherwise linger as stale pixels,
+                    // so wipe the screen as soon as we notice the resize.
+                    let mut r = renderer.borrow_mut();
+                    r.refresh_size();
+                    r.clear()?;
+                }
+
                 if let Event::Key(key) = event {
                     match &mut post_game {
                         Some(PostGamePhase::NameEntry(name)) => match key.code {
@@ -503,6 +508,12 @@ fn main() -> io::Result<()> {
                 });
             }
         }
+
+        let mut win = Window::centered(
+            renderer.clone(),
+            (FIELD_COLS * 2 + 2) as u16,
+            (FIELD_LINES + 1) as u16,
+        );
 
         match state {
             GameState::Starting => draw_main_menu(&mut win)?,

@@ -37,7 +37,13 @@ impl Window {
     pub fn centered(renderer: Rc<RefCell<Renderer>>, width: u16, height: u16) -> Self {
         let (x, y) = renderer.borrow().center_point();
 
-        Window::new(renderer, x - width / 2, y - height / 2, width, height)
+        Window::new(
+            renderer,
+            x.saturating_sub(width / 2),
+            y.saturating_sub(height / 2),
+            width,
+            height,
+        )
     }
 
     pub fn set_title(&mut self, title: &str) {
@@ -130,18 +136,28 @@ impl Window {
 
 pub struct Renderer {
     stdout: Stdout,
+    term_size: (u16, u16),
 }
 
 impl Renderer {
     pub fn new() -> Self {
         Self {
             stdout: io::stdout(),
+            term_size: size().unwrap_or((80, 24)),
+        }
+    }
+
+    /// Re-reads the terminal size from the OS. Called whenever a resize
+    /// event is observed so that centering and clipping stay in sync with
+    /// the terminal instead of the size captured at startup.
+    pub fn refresh_size(&mut self) {
+        if let Ok(s) = size() {
+            self.term_size = s;
         }
     }
 
     pub fn center_point(&self) -> (u16, u16) {
-        let (x, y) = size().unwrap();
-        ((x / 2) as u16, (y / 2) as u16)
+        (self.term_size.0 / 2, self.term_size.1 / 2)
     }
 
     pub fn init(&mut self) -> Result<(), io::Error> {
@@ -181,12 +197,26 @@ impl Renderer {
         y: u16,
         c: StyledContent<char>,
     ) -> Result<(), io::Error> {
+        if x >= self.term_size.0 || y >= self.term_size.1 {
+            return Ok(());
+        }
+
         queue!(self.stdout, MoveTo(x, y), Print(&c))?;
         Ok(())
     }
 
     pub fn print_str(&mut self, x: u16, y: u16, s: &str) -> Result<(), io::Error> {
-        queue!(self.stdout, MoveTo(x, y), Print(s))?;
+        if x >= self.term_size.0 || y >= self.term_size.1 {
+            return Ok(());
+        }
+
+        // Truncate so the string can't run past the right edge and wrap
+        // onto the next terminal row, which is what causes the mangled
+        // look when the window is close to the terminal's width.
+        let max_len = (self.term_size.0 - x) as usize;
+        let clipped: String = s.chars().take(max_len).collect();
+
+        queue!(self.stdout, MoveTo(x, y), Print(clipped))?;
         Ok(())
     }
 }
