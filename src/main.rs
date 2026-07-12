@@ -259,7 +259,14 @@ fn draw_main_menu(window: &mut Window) -> Result<(), io::Error> {
     window.print_centered_str(2, "Snake game in the terminal")?;
     window.print_centered_str(3, "written in Rust")?;
     window.print_centered_str(5, "Use arrow keys ← → ↑ ↓, WASD or HJKL to move")?;
-    window.print_centered_str(7, "Press ESC to exit")?;
+    window.print_centered_str(7, "Press SPACE to pause, ESC to exit")?;
+    Ok(())
+}
+
+fn draw_pause_overlay(window: &mut Window) -> Result<(), io::Error> {
+    let row = (FIELD_LINES / 2) as u16;
+    window.print_centered_str(row, "PAUSED")?;
+    window.print_centered_str(row + 1, "Press SPACE to resume")?;
     Ok(())
 }
 
@@ -361,6 +368,7 @@ fn main() -> io::Result<()> {
     let mut game_start: Option<Instant> = None;
     let mut ended_at: Option<Instant> = None;
     let mut post_game: Option<PostGamePhase> = None;
+    let mut paused = false;
 
     'main: loop {
         loop {
@@ -440,6 +448,10 @@ fn main() -> io::Result<()> {
                         Some(PostGamePhase::Cooldown) | None => {
                             let dir = match key.code {
                                 KeyCode::Esc => break 'main,
+                                KeyCode::Char(' ') if game.state() == GameState::Started => {
+                                    paused = !paused;
+                                    None
+                                }
                                 KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => {
                                     Some(Direction::Up)
                                 }
@@ -458,7 +470,7 @@ fn main() -> io::Result<()> {
                             if let Some(dir) = dir {
                                 // Cap the buffer so a queued turn can't outlive the snake's
                                 // ability to actually reach it before crashing into itself.
-                                if pending_moves.len() < 2 {
+                                if pending_moves.len() < 2 && !paused {
                                     pending_moves.push_back(dir);
                                 }
                             }
@@ -478,13 +490,15 @@ fn main() -> io::Result<()> {
         let prev_state = game.state();
         let can_restart = prev_state != GameState::Ended || post_game.is_none();
 
-        if can_restart {
+        if can_restart && !paused {
             if let Some(dir) = pending_moves.pop_front() {
                 game.move_to(dir);
             }
         }
 
-        game.step();
+        if !paused {
+            game.step();
+        }
 
         let state = game.state();
 
@@ -492,6 +506,7 @@ fn main() -> io::Result<()> {
             game_start = Some(Instant::now());
             ended_at = None;
             post_game = None;
+            paused = false;
         }
 
         if prev_state == GameState::Started && state == GameState::Ended {
@@ -517,7 +532,12 @@ fn main() -> io::Result<()> {
 
         match state {
             GameState::Starting => draw_main_menu(&mut win)?,
-            GameState::Started => draw_game(&mut win, &game, &snake_style, apple_color, frame)?,
+            GameState::Started => {
+                draw_game(&mut win, &game, &snake_style, apple_color, frame)?;
+                if paused {
+                    draw_pause_overlay(&mut win)?;
+                }
+            }
             GameState::Ended => {
                 renderer.borrow_mut().clear()?;
 
